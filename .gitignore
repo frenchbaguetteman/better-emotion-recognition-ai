@@ -1,0 +1,15 @@
+# Dataset
+Emotion_Balanced/
+
+# Generated Data
+data/
+
+# Model Checkpoints and Logs
+checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+
+# System
+.DS_Store
