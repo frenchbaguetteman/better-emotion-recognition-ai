@@ -1,10 +1,12 @@
 # Better Emotion Recognition AI
 
-Speech emotion recognition (Angry / Happy / Neutral / Sad) using a fine-tuned WavLM-Large encoder. The model is trained on podcast speech and tested zero-shot on four acted-speech corpora.
+A research project on speech emotion recognition that holds up outside its training data. A model trained on natural podcast conversations is tested, with no further tuning, on four acted emotional-speech corpora. The project also asks whether adding the words that were spoken, from a transcript, helps beyond the sound of the voice.
+
+The model classifies speech into four emotions: **Angry, Happy, Neutral and Sad**.
 
 ## Results
 
-**The audio-only model averages 43.37% macro-F1** across CREMA-D, RAVDESS, SAVEE and TESS. None of these corpora were seen in training.
+**The audio-only model averages 43.37% macro-F1** across four corpora it never saw in training. For reference, chance is 25%.
 
 | Dataset  | Audio-only | Audio+text* | Δ (pp) |
 |----------|-----------:|------------:|-------:|
@@ -14,166 +16,46 @@ Speech emotion recognition (Angry / Happy / Neutral / Sad) using a fine-tuned Wa
 | RAVDESS  | **31.04%** | 29.08% | −1.96 |
 | **Average** | **43.37%** | 40.62% | −2.75 |
 
-Δ is audio+text minus audio-only, in percentage points, computed from unrounded scores.
+Δ is audio+text minus audio-only, in percentage points.
 
-\* No transcripts exist for the external corpora, so the audio+text model ran with its text embedding zeroed. These numbers show how it degrades when text is missing. They are not a measure of real multimodal performance.
-
-### Per-emotion breakdown
+\* No transcripts exist for these corpora, so the audio+text model ran with its text input empty.
 
 ![Cross-dataset comparison: macro-F1 per dataset, audio+text minus audio-only, and per-emotion F1 for each model](results/model_comparison.png)
 
-- **The audio-only model wins on all four corpora.** The largest gap is on CREMA-D.
+- **Audio-only wins on all four corpora.** The largest gap is on CREMA-D.
 - **Happy is the weakest class.** It is the lowest-scoring class on every corpus except RAVDESS, where it ties with Neutral. The audio+text model scores near 0 F1 for Happy on TESS.
 - **Angry and Sad are the most consistent.** Both stay between about 0.43 and 0.6 F1 on every corpus, for both models.
 - **RAVDESS is the hardest corpus.** Happy and Neutral both fall to about 0.1 F1 or lower there.
 
-## Overview
+## Approach
 
-The model combines a fine-tuned **WavLM-Large** audio encoder with an optional **DistilRoBERTa** text branch, which reads Whisper transcripts. An auxiliary head regresses valence, arousal and dominance (VAD).
+**Training data.** The training clips are segments of MSP-Podcast, which is natural, unscripted podcast speech. They come from the NaturalVoices EVC "Emotion_Balanced" set. Each clip has an emotion label and valence, arousal and dominance scores. The data is split into five folds by speaker, so validation always uses voices the model has not heard.
 
-Training uses podcast speech (MSP-Podcast segments from NaturalVoices EVC), with folds split by speaker.
+**Model.** The audio encoder is WavLM-Large, a self-supervised speech model, fine-tuned for this task. An optional second branch reads a Whisper transcript with DistilRoBERTa and combines it with the audio. Alongside the emotion label, the model also predicts valence, arousal and dominance as a secondary objective. Confidence scores are calibrated, so the model can choose not to answer on uncertain clips.
 
-## Architecture
+**Evaluation.** Both variants are tested zero-shot on CREMA-D, RAVDESS, SAVEE and TESS. These are widely used acted corpora that differ in speakers, recording setups and scripts. Only clips labeled with one of the four target emotions are used.
 
-```
-audio (16 kHz, ≤8 s) ─► WavLM-Large ─► attention pooling ─► 1024-d ─┐
-                                                                   ├─► concat ─► MLP (512) ─► 4 emotion logits
-text (Whisper) ─► DistilRoBERTa ─► masked mean pool ─► 768-d ──────┘         └─► MLP (256) ─► VAD (3)
-```
+## Discussion
 
-- **Loss:** class-weighted cross-entropy with label smoothing (0.05), plus `vad_lambda × MSE` on VAD targets.
-- **Optimization:** AdamW with cosine schedule and 10% warmup, mixed precision on CUDA, and early stopping on validation macro-F1.
-- **Text dropout:** during training, 10% of samples get their text embedding zeroed. This lets the model tolerate a missing transcript.
-- **Audio-only variant:** `use_text=False` drops the text branch completely.
+- **Domain shift is the main challenge.** The model learned from spontaneous conversation and is tested on emotions performed on cue in a studio. Scores range from 31% to 50% depending on the corpus, so the choice of test corpus matters about as much as the model does.
+- **Text didn't help here, but the test isn't fair to it.** The text branch received no input. With empty text, the audio+text model lost 2.75 points on average. It degraded but did not collapse.
+- **Text may not help on acted corpora at all.** All four corpora are built from a small set of scripted sentences, mostly chosen to be emotionally neutral. Even with perfect transcripts, the words would say little about the emotion. Text is more likely to help on natural speech like the training data.
+- **Happy transfers worst.** One plausible reason is that happiness in casual conversation sounds different from happiness performed for a recording.
 
-## Repository layout
+## Limitations and next steps
 
-```
-src/
-  config.py              Paths, model names, emotion labels
-  download_evc.py        Download the Emotion_Balanced training set from Hugging Face
-  build_manifest.py      Match audio files to metadata → data/manifest.csv
-  make_speaker_folds.py  5 speaker-independent folds (train / val / calibration) → data/splits.json
-  transcribe_fast.py     Whisper transcripts with faster-whisper → data/transcripts.csv
-  transcribe_dataset.py  Same, with the transformers ASR pipeline
-  dataset.py             PyTorch dataset (cropping, padding, optional in-memory audio cache)
-  model.py               EmotionModel (WavLM + optional DistilRoBERTa, attention pooling, VAD head)
-  train.py               Audio+text training
-  train_optimized.py     Same with extra GPU-throughput tuning (used by run_training.sh)
-  train_audio_only.py    Audio-only training
-  calibrate.py           Temperature scaling + confidence threshold for an abstain policy
-  evaluate.py            Held-out fold metrics: accuracy, macro-F1, ECE, NLL, VAD RMSE/Pearson
-  report.py              Aggregate results across folds
-  compare_models.py      Quick audio-only vs audio+text comparison on manifest samples
-  evaluate_both_models.py  Cross-dataset evaluation on CREMA-D / RAVDESS / SAVEE / TESS
-  visualize_results.py   Plots for the cross-dataset results → results/
-  predict.py             Single-file inference (Whisper + emotion model)
-  gui.py                 Tkinter app: record from mic or pick a random file and predict
-  gpu_monitor.py, gpu_optimize.py  GPU diagnostics / live monitoring
-run_ensemble.sh          Train all 5 folds
-run_training.sh          Remote-VM launcher (background training + GPU monitoring)
-check_training.sh        Check status of a run started by run_training.sh
-deploy_and_run.sh        rsync code to a JarvisLabs VM and start training
-test_system.py           Forward-pass smoke test
-results/                 Cross-dataset result figures
-```
+- **No untouched in-domain test set.** Held-out speakers were also used for early stopping and calibration.
+- **The text branch is untested with real transcripts on the external corpora.** Transcribing them with Whisper is the obvious next step, though the scripted sentences limit what text can add.
+- **Only four emotion classes.** Fear, Disgust, Surprise and Calm clips in the test corpora were excluded.
+- **Trained weights are not published.** Each checkpoint is 1.2–1.6 GB.
 
-## Setup
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python test_system.py   # smoke test: downloads wavlm-base + distilroberta, runs one forward pass
-```
-
-The GUI also requires Tk and PortAudio for `sounddevice`. On macOS, run `brew install portaudio`.
-
-## Data preparation
-
-Run all commands from the repository root.
-
-```bash
-# 1. Training data (NaturalVoices EVC "Emotion_Balanced", ~MSP-Podcast segments)
-python src/download_evc.py --token <HF_TOKEN>   # → Emotion_Balanced/
-
-# 2. Manifest + speaker-independent folds
-python src/build_manifest.py                     # → data/manifest.csv
-python src/make_speaker_folds.py                 # → data/splits.json
-
-# 3. Transcripts for the text branch (optional for audio-only)
-python src/transcribe_fast.py                    # → data/transcripts.csv
-```
-
-Folds are split by speaker with `GroupKFold`. Each fold's held-out speakers are then split 50/50 into an early-stopping set and a calibration set. No speaker appears in more than one split.
-
-## Training
-
-```bash
-# Audio + text, one fold
-python src/train.py --fold 0 --batch_size 16 --epochs 10 --lr 1e-5
-
-# Audio only
-python src/train_audio_only.py --fold 0
-
-# All five folds
-bash run_ensemble.sh
-```
-
-Checkpoints are written to `checkpoints/fold_<k>_seed_<s>/best_model.pt` (audio+text) or `checkpoints/fold_<k>_audio_only/best_model_audio_only.pt`. WavLM-Large needs a large GPU. Training was done on an A100.
-
-To train on a remote VM:
-
-```bash
-JARVISLABS_PORT=<port> bash deploy_and_run.sh <fold> <batch_size> <seed>   # from your machine
-bash check_training.sh <fold>                                              # on the VM
-```
-
-## Calibration and evaluation
-
-```bash
-python src/calibrate.py --fold 0 --target_error 0.10   # temperature + abstain threshold
-python src/evaluate.py  --fold 0                       # metrics on held-out speakers
-python src/report.py                                   # summary across folds
-```
-
-### Cross-dataset evaluation
-
-Put the external corpora in a single folder with this layout:
+## Repository
 
 ```
-external_datasets/
-  Crema/*.wav
-  Ravdess/audio_speech_actors_01-24/Actor_*/*.wav
-  Savee/*.wav
-  Tess/<SPEAKER>_<emotion>/*.wav
+src/       data preparation, model, training, calibration, evaluation and inference
+scripts/   5-fold training launcher
+tests/     model smoke test
+results/   evaluation figures
 ```
 
-Then run:
-
-```bash
-python src/evaluate_both_models.py --datasets_root external_datasets   # → comparison_results.json
-python src/visualize_results.py                                       # → results/*.png
-```
-
-The script loads `final_models/best_model_audio_only.pt` and `final_models/best_model_audio_text.pt`.
-
-## Inference
-
-```bash
-python src/predict.py path/to/clip.wav --model_path final_models/best_model_audio_text.pt
-python src/gui.py
-```
-
-`predict.py` transcribes the clip with Whisper (tiny), runs the audio+text model, and prints the emotion, its confidence and the VAD scores. The GUI loads `checkpoints/fold_0_seed_42/best_model_with_transcription.pt` by default. To use a different checkpoint, edit `model_path` in `src/gui.py`.
-
-## Model weights
-
-The trained checkpoints are not in this repository. Each one is 1.2–1.6 GB, which exceeds GitHub's file size limit. Place them in `final_models/` to run evaluation and inference.
-
-## Limitations
-
-- Only four emotion classes. Labels from other corpora (Fear, Disgust, Surprise, Calm, …) are excluded during evaluation.
-- Cross-corpus macro-F1 is around 43%. Two likely causes are the domain shift from spontaneous podcast speech to acted studio speech, and Happy being under-recognized.
-- The audio+text model depends on ASR quality and has not been evaluated with real transcripts on the external corpora.
-- There is no untouched in-domain test set yet. `evaluate.py` reports on each fold's held-out speakers, but those speakers are also used for early stopping and calibration.
-- `test_system.py` only checks output shapes. It does not validate model quality or the full pipeline.
+Built with PyTorch and Hugging Face Transformers. The dependencies are in `requirements.txt`. Datasets and model weights are not included.

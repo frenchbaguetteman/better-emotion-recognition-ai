@@ -1,10 +1,9 @@
 #!/bin/bash
 
-# Run 5-Fold Cross Validation Ensemble Training
-# This will train 5 models, one for each fold.
+# Train one model per speaker-independent fold (5-fold cross-validation).
 
-echo "Starting Ensemble Training..."
-export PYTHONPATH=$PYTHONPATH:.
+cd "$(dirname "$0")/.."
+echo "Starting 5-fold training..."
 
 for fold in {0..4}
 do
@@ -23,4 +22,4 @@ do
     echo "Finished Fold $fold"
 done
 
-echo "Ensemble training complete. Data extraction and ensembling of predictions usually happens in inference step."
+echo "All folds complete. Run src/calibrate.py, src/evaluate.py and src/report.py next."

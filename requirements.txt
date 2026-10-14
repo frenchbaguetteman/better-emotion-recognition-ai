@@ -17,7 +17,7 @@ requests
 
 # Inference: speech-to-text for the audio+text model (predict.py, gui.py)
 openai-whisper
-# Faster batch transcription of the training set (transcribe_fast.py)
+# Faster batch transcription of the training set (transcribe.py)
 faster-whisper
 
 # Live microphone GUI (gui.py)

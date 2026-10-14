@@ -6,13 +6,13 @@ import torch
 import sys
 import json
 
-def transcribe_fast():
+def transcribe():
     print("Initializing Faster-Whisper model...", flush=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # FP16 is faster on A100 and maintains good speech recognition accuracy
-    # cpu_threads=16 for parallel audio decoding
-    model = WhisperModel("tiny", device=device, compute_type="float16", cpu_threads=16)
+    # FP16 on GPU; CPU does not support FP16, so fall back to int8
+    compute_type = "float16" if device == "cuda" else "int8"
+    model = WhisperModel("tiny", device=device, compute_type=compute_type, cpu_threads=16)
     
     # Load manifest
     df = pd.read_csv(Config.MANIFEST_PATH)
@@ -75,4 +75,4 @@ def transcribe_fast():
     print("Transcription complete.", flush=True)
 
 if __name__ == "__main__":
-    transcribe_fast()
+    transcribe()

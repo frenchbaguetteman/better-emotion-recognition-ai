@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-# import torchaudio
 import soundfile as sf
 import pandas as pd
 import numpy as np
@@ -81,8 +80,6 @@ class EmotionDataset(Dataset):
     
     def _load_audio(self, path):
         """Load and resample audio efficiently"""
-        # NO MORE PATH CORRECTION HERE - Done in train_optimized.py for performance
-
         if self.cache_audio and path in self.audio_cache:
             return self.audio_cache[path]
         

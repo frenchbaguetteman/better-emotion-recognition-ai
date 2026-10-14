@@ -33,19 +33,9 @@ def build_manifest():
         filename = os.path.basename(file_path)
         # remove extension
         base = os.path.splitext(filename)[0]
-        # format: MSP-PODCAST_xxxx_yyyy
-        # We need to construct the key. 
-        # The observed format was MSP-PODCAST_0002_230
-        # Wait, if document is MSP-PODCAST_0002 and part is 230.
-        # Let's hope the join works.
-        
         try:
-            # Reconstruct key from filename
-            # Assume filename matches exactly the key logic: Document + '_' + Part
-            # But the part number in filename might have padding?
-            # In CSV 230 is integer. In filename it is '230'.
-            # MSP-PODCAST_0002_230 -> Document=MSP-PODCAST_0002, Part=230
-            # Let's split by last underscore
+            # Filename is <Document>_<Part Number>, e.g. MSP-PODCAST_0002_230
+            # -> Document=MSP-PODCAST_0002, Part=230. Split on the last underscore.
             parts = base.rsplit('_', 1)
             if len(parts) == 2:
                 doc = parts[0]

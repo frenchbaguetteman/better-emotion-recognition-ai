@@ -52,13 +52,8 @@ def evaluate(args):
         splits = json.load(f)
     fold_data = splits[args.fold]
     
-    # We evaluate on the FULL validation set (optim + calibration) for reporting?
-    # Or just the held out set. Since we used calibration set for T, it's slightly cheated for ECE if we use T.
-    # But usually we report on the test set. Here let's use the union of val+calib as "Test" for this fold, 
-    # acknowledging calib was used for T. Ideally we'd have a 3rd set.
-    # Let's use val_optim as the "test" for calibration? No, val_optim was used for stopping.
-    # We are in a bind due to limited splits.
-    # Let's report on the CONCATENATION of val_optim and calibration, as that represents the full removed speaker set.
+    # Report on all held-out speakers for this fold (val + calibration). Note that val was
+    # used for early stopping and calibration for temperature scaling; there is no untouched test set.
     
     manifest_df = pd.read_csv(Config.MANIFEST_PATH)
     test_indices = fold_data['val'] + fold_data['calibration']
