@@ -1,29 +1,37 @@
 # Better Emotion Recognition AI
 
-Speech emotion recognition with a fine-tuned **WavLM-Large** encoder, an optional **DistilRoBERTa** text branch fed by Whisper transcripts, and an auxiliary valence/arousal/dominance (VAD) regression head. The model predicts four emotions: **Angry, Happy, Neutral, Sad**.
-
-It is trained on podcast speech (MSP-Podcast segments from NaturalVoices EVC) with speaker-independent folds. It is then evaluated zero-shot on four acted-speech corpora: CREMA-D, RAVDESS, SAVEE and TESS.
+Speech emotion recognition (Angry / Happy / Neutral / Sad) using a fine-tuned WavLM-Large encoder. The model is trained on podcast speech and tested zero-shot on four acted-speech corpora.
 
 ## Results
 
-Cross-dataset macro-F1, zero-shot. No external corpus was seen in training.
+**The audio-only model averages 43.37% macro-F1** across CREMA-D, RAVDESS, SAVEE and TESS. None of these corpora were seen in training.
 
-| Dataset  | Audio-only | Audio+text* |
-|----------|-----------:|------------:|
-| CREMA-D  | **49.46%** | 44.31% |
-| RAVDESS  | **31.04%** | 29.08% |
-| SAVEE    | **50.35%** | 48.23% |
-| TESS     | **42.63%** | 40.87% |
-| **Average** | **43.37%** | 40.62% |
+| Dataset  | Audio-only | Audio+text* | Δ (pp) |
+|----------|-----------:|------------:|-------:|
+| SAVEE    | **50.35%** | 48.23% | −2.13 |
+| CREMA-D  | **49.46%** | 44.31% | −5.15 |
+| TESS     | **42.63%** | 40.87% | −1.75 |
+| RAVDESS  | **31.04%** | 29.08% | −1.96 |
+| **Average** | **43.37%** | 40.62% | −2.75 |
+
+Δ is audio+text minus audio-only, in percentage points, computed from unrounded scores.
 
 \* No transcripts exist for the external corpora, so the audio+text model ran with its text embedding zeroed. These numbers show how it degrades when text is missing. They are not a measure of real multimodal performance.
 
-![Model comparison](results/model_comparison.png)
+### Per-emotion breakdown
 
-Observations:
-- The audio-only model generalizes better across corpora on every dataset.
-- **Happy** is the weakest class almost everywhere. It is close to 0 F1 on TESS for the audio+text model.
-- RAVDESS is the hardest corpus. Neutral and Happy are frequently confused there.
+![Cross-dataset comparison: macro-F1 per dataset, audio+text minus audio-only, and per-emotion F1 for each model](results/model_comparison.png)
+
+- **The audio-only model wins on all four corpora.** The largest gap is on CREMA-D.
+- **Happy is the weakest class.** It is the lowest-scoring class on every corpus except RAVDESS, where it ties with Neutral. The audio+text model scores near 0 F1 for Happy on TESS.
+- **Angry and Sad are the most consistent.** Both stay between about 0.43 and 0.6 F1 on every corpus, for both models.
+- **RAVDESS is the hardest corpus.** Happy and Neutral both fall to about 0.1 F1 or lower there.
+
+## Overview
+
+The model combines a fine-tuned **WavLM-Large** audio encoder with an optional **DistilRoBERTa** text branch, which reads Whisper transcripts. An auxiliary head regresses valence, arousal and dominance (VAD).
+
+Training uses podcast speech (MSP-Podcast segments from NaturalVoices EVC), with folds split by speaker.
 
 ## Architecture
 
