@@ -1,138 +1,161 @@
 import argparse
 import torch
-import torch.nn as nn
-import torchaudio
-import soundfile as sf
+import librosa
 import numpy as np
+import whisper
 import os
-import json
-import pickle
-from transformers import WavLMModel
-
+from transformers import AutoTokenizer
 from config import Config
 from model import EmotionModel
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("input_file", type=str, help="Path to input audio file")
-    parser.add_argument("--checkpoint_dir", type=str, required=True, help="Path to checkpoint directory containing best_model.pt and calibration.pkl")
-    return parser.parse_args()
+# Set tokenizers parallelism to false to avoid warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-def preprocess_audio(path, chunk_duration=8.0, stride=4.0, target_sr=16000):
-    # waveform, sr = torchaudio.load(path)
-    audio_data, sr = sf.read(path)
-    waveform = torch.from_numpy(audio_data).float()
-    
-    if waveform.ndim == 1:
-        waveform = waveform.unsqueeze(0)
-    else:
-        waveform = waveform.t()
-
-    if sr != target_sr:
-        resampler = torchaudio.transforms.Resample(sr, target_sr)
-        waveform = resampler(waveform)
-    
-    if waveform.shape[0] > 1:
-        waveform = torch.mean(waveform, dim=0, keepdim=True)
+def load_audio(path, target_sr=16000, duration=8.0):
+    try:
+        # Use soundfile to match training exactly
+        import soundfile as sf
         
-    # Sliding window
-    # waveform: (1, L)
-    total_len = waveform.shape[1]
-    chunk_len = int(chunk_duration * target_sr)
-    stride_len = int(stride * target_sr)
-    
-    chunks = []
-    
-    if total_len < chunk_len:
-        # Pad
-        padding = chunk_len - total_len
-        padded = torch.nn.functional.pad(waveform, (0, padding))
-        chunks.append(padded)
-    else:
-        for i in range(0, total_len - chunk_len + 1, stride_len):
-            chunk = waveform[:, i:i+chunk_len]
-            chunks.append(chunk)
-            
-        # Handle last chunk if needed?
-        # Typically we just take what fits.
+        # Read file (T, C) usually
+        audio_data, sr = sf.read(path)
         
-    return torch.stack(chunks) # (N, 1, L)
+        # Convert to float32
+        audio_data = audio_data.astype(np.float32)
 
-def predict(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    
-    # Load Calibration
-    calib_path = os.path.join(args.checkpoint_dir, "calibration.pkl")
-    if not os.path.exists(calib_path):
-        print("Calibration file not found. Using defaults (T=1.0, tau=0.0)")
-        calib = {"temperature": 1.0, "threshold": 0.0}
-    else:
-        with open(calib_path, 'rb') as f:
-            calib = pickle.load(f)
+        # Check dimensions (sf read gives (Time, Channels) for stereo, (Time,) for mono)
+        if audio_data.ndim == 1:
+            # (T,) -> (1, T)
+            audio_data = audio_data[np.newaxis, :]
+        else:
+            # (T, C) -> (C, T)
+            audio_data = audio_data.T
+        
+        # Resample if needed
+        if sr != target_sr:
+            # Use librosa for high quality resampling
+            audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=target_sr)
+        
+        waveform = torch.from_numpy(audio_data)
+        
+        # Mono
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
             
-    # Load Model
-    model_path = os.path.join(args.checkpoint_dir, "best_model.pt")
-    model = EmotionModel(Config.MODEL_NAME, num_classes=len(Config.EMOTIONS))
-    model.load_state_dict(torch.load(model_path, map_location=device))
+        # Pad/Crop
+        target_len = int(duration * target_sr)
+        if waveform.shape[1] > target_len:
+            start = (waveform.shape[1] - target_len) // 2
+            waveform = waveform[:, start:start+target_len]
+            attention_mask = torch.ones(target_len, dtype=torch.long)
+        else:
+            padding = target_len - waveform.shape[1]
+            waveform = torch.nn.functional.pad(waveform, (0, padding))
+            attention_mask = torch.cat(
+                [
+                    torch.ones(waveform.shape[1] - padding, dtype=torch.long),
+                    torch.zeros(padding, dtype=torch.long),
+                ],
+                dim=0,
+            )
+            
+        return waveform, attention_mask # (1, T), (T,)
+
+    except Exception as e:
+        print(f"Error loading audio: {e}")
+        return None, None
+
+def transcribe(audio_path, model):
+    # Depending on whisper version, it might return a dict or object
+    result = model.transcribe(audio_path)
+    # result is a dict with 'text' key
+    return result["text"].strip()
+
+def predict(audio_path, model_path):
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    if not torch.backends.mps.is_available() and torch.cuda.is_available():
+        device = "cuda"
+        
+    print(f"Using device: {device}")
+    
+    # Load Main Model
+    print("Loading Emotion Model...")
+    model = EmotionModel(Config.MODEL_NAME, Config.TEXT_MODEL_NAME)
+    
+    if not os.path.exists(model_path):
+        print(f"Error: Model checkpoint not found at {model_path}")
+        return
+
+    # Load to CPU first to avoid MPS unaligned blit errors
+    state_dict = torch.load(model_path, map_location="cpu")
+    model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
     
-    # Process Audio
-    patches = preprocess_audio(args.input_file)
-    patches = patches.squeeze(1).to(device) # (N, L)
+    # Load Tokenizer
+    print("Loading Tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(Config.TEXT_MODEL_NAME)
+    
+    # Load Whisper
+    print("Loading Whisper for transcription...")
+    try:
+        stt_model = whisper.load_model("tiny", device=device)
+    except Exception as e:
+        print(f"Warning: Failed to load Whisper on {device}, falling back to CPU. Error: {e}")
+        stt_model = whisper.load_model("tiny", device="cpu")
+    
+    # Process Input
+    print(f"Processing {audio_path}...")
+    audio_tensor, attention_mask = load_audio(audio_path)
+    if audio_tensor is None:
+        return
+    
+    audio_tensor = audio_tensor.to(device)
+    attention_mask = attention_mask.unsqueeze(0).to(device)
+    
+    # Transcribe
+    print("Transcribing audio content...")
+    text = transcribe(audio_path, stt_model)
+    print(f"Transcript: '{text}'")
+    
+    # Tokenize
+    if text:
+        inputs = tokenizer(text, return_tensors="pt", padding="max_length", truncation=True, max_length=Config.MAX_TEXT_LEN)
+        input_ids = inputs.input_ids.to(device)
+        text_attention_mask = inputs.attention_mask.to(device)
+    else:
+        input_ids = torch.zeros((1, Config.MAX_TEXT_LEN), dtype=torch.long, device=device)
+        text_attention_mask = torch.zeros((1, Config.MAX_TEXT_LEN), dtype=torch.long, device=device)
     
     # Inference
-    all_logits = []
-    all_vads = []
-    
+    print("Running Multi-Modal Inference...")
     with torch.no_grad():
-        # Batch processing if patches is large
-        batch_size = 8
-        for i in range(0, len(patches), batch_size):
-            batch = patches[i:i+batch_size]
-            logits, vad = model(batch)
-            all_logits.append(logits)
-            all_vads.append(vad)
-            
-    all_logits = torch.cat(all_logits, dim=0)
-    all_vads = torch.cat(all_vads, dim=0)
-    
-    # Average
-    avg_logits = torch.mean(all_logits, dim=0) # (4,)
-    avg_vad = torch.mean(all_vads, dim=0) # (3,)
-    
-    # Calibrate
-    T = calib['temperature']
-    scaled_logits = avg_logits / T
-    probs = torch.softmax(scaled_logits, dim=0)
-    
-    conf, pred_idx = torch.max(probs, dim=0)
-    pred_idx = pred_idx.item()
-    conf = conf.item()
-    
-    # Decide
-    result = {
-        "emotion": Config.ID2EMOTION[pred_idx],
-        "confidence": conf,
-        "vad": {
-            "valence": avg_vad[0].item(),
-            "arousal": avg_vad[1].item(),
-            "dominance": avg_vad[2].item()
-        },
-        "is_uncertain": False,
-        "raw_logits": avg_logits.tolist() # For analysis
-    }
-    
-    if conf < calib['threshold']:
-        result['is_uncertain'] = True
-        result['decision'] = "ABSTAIN"
-    else:
-        result['decision'] = result['emotion']
+        logits, vad_output = model(
+            input_values=audio_tensor,
+            attention_mask=attention_mask,
+            input_ids=input_ids, 
+            text_attention_mask=text_attention_mask
+        )
         
-    # Output
-    print(json.dumps(result, indent=4))
-    return result
+        # Softmax
+        probs = torch.softmax(logits, dim=1)
+        pred_idx = torch.argmax(probs, dim=1).item()
+        
+    emotion = Config.ID2EMOTION[pred_idx]
+    confidence = probs[0][pred_idx].item()
+    
+    print("\n" + "=" * 40)
+    print(f"PREDICTION: {emotion.upper()}")
+    print(f"Confidence: {confidence:.2%}")
+    print(f"VAD (Val/Aro/Dom): {vad_output[0].cpu().numpy()}")
+    print("=" * 40 + "\n")
+    
+    return emotion, confidence
 
 if __name__ == "__main__":
-    args = parse_args()
-    predict(args)
+    parser = argparse.ArgumentParser(description="Run inference on an audio file")
+    parser.add_argument("audio_path", help="Path to audio file (wav, mp3, etc.)")
+    parser.add_argument("--model_path", default="checkpoints/best_model.pt", help="Path to model checkpoint")
+    
+    args = parser.parse_args()
+    
+    predict(args.audio_path, args.model_path)

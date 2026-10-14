@@ -15,6 +15,11 @@ class Config:
     SAMPLE_RATE = 16000
     DURATION = 8.0 # seconds for training crops
     
+    # Text Model Config
+    TEXT_MODEL_NAME = "distilroberta-base"
+    MAX_TEXT_LEN = 64 # Short phrases usually in this dataset
+    TEXT_DROPOUT = 0.1
+    
     # EMOTIONS
     EMOTIONS = ["Angry", "Happy", "Neutral", "Sad"]
     EMOTION2ID = {e: i for i, e in enumerate(EMOTIONS)}

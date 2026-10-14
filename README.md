@@ -1,83 +1,171 @@
-# Speech emotion recognition
+# Better Emotion Recognition AI
 
-A research prototype for recognizing emotion from speech with a WavLM backbone and attention pooling.
-It combines four-class emotion prediction with valence, arousal, and dominance regression, then
-adds temperature calibration and an option to abstain on low-confidence predictions.
+Speech emotion recognition with a fine-tuned **WavLM-Large** encoder, an optional **DistilRoBERTa** text branch fed by Whisper transcripts, and an auxiliary valence/arousal/dominance (VAD) regression head. The model predicts four emotions: **Angry, Happy, Neutral, Sad**.
 
-The configured classes are **Angry, Happy, Neutral, and Sad**. The default backbone is
-`microsoft/wavlm-large`.
+It is trained on podcast speech (MSP-Podcast segments from NaturalVoices EVC) with speaker-independent folds. It is then evaluated zero-shot on four acted-speech corpora: CREMA-D, RAVDESS, SAVEE and TESS.
 
-## Pipeline
+## Results
 
-1. Match audio recordings to metadata and build a manifest.
-2. Group recordings by speaker for cross-validation folds.
-3. Fine-tune the classification and regression heads with the backbone.
-4. Calibrate confidence on a separate calibration subset.
-5. Predict on overlapping audio windows and aggregate the outputs.
+Cross-dataset macro-F1, zero-shot. No external corpus was seen in training.
 
-## Setup and data
+| Dataset  | Audio-only | Audio+text* |
+|----------|-----------:|------------:|
+| CREMA-D  | **49.46%** | 44.31% |
+| RAVDESS  | **31.04%** | 29.08% |
+| SAVEE    | **50.35%** | 48.23% |
+| TESS     | **42.63%** | 40.87% |
+| **Average** | **43.37%** | 40.62% |
 
-```sh
-git clone https://github.com/frenchbaguetteman/better-emotion-recognition-ai.git
-cd better-emotion-recognition-ai
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+\* No transcripts exist for the external corpora, so the audio+text model ran with its text embedding zeroed. These numbers show how it degrades when text is missing. They are not a measure of real multimodal performance.
+
+![Model comparison](results/model_comparison.png)
+
+Observations:
+- The audio-only model generalizes better across corpora on every dataset.
+- **Happy** is the weakest class almost everywhere. It is close to 0 F1 on TESS for the audio+text model.
+- RAVDESS is the hardest corpus. Neutral and Happy are frequently confused there.
+
+## Architecture
+
+```
+audio (16 kHz, ≤8 s) ─► WavLM-Large ─► attention pooling ─► 1024-d ─┐
+                                                                   ├─► concat ─► MLP (512) ─► 4 emotion logits
+text (Whisper) ─► DistilRoBERTa ─► masked mean pool ─► 768-d ──────┘         └─► MLP (256) ─► VAD (3)
 ```
 
-Supply the audio and matching metadata yourself. The expected layout is defined in
-[src/config.py](src/config.py):
+- **Loss:** class-weighted cross-entropy with label smoothing (0.05), plus `vad_lambda × MSE` on VAD targets.
+- **Optimization:** AdamW with cosine schedule and 10% warmup, mixed precision on CUDA, and early stopping on validation macro-F1.
+- **Text dropout:** during training, 10% of samples get their text embedding zeroed. This lets the model tolerate a missing transcript.
+- **Audio-only variant:** `use_text=False` drops the text branch completely.
 
-```text
-Emotion_Balanced/
-  emotion_balanced/                       # .flac / .wav audio, searched recursively
-  selected_emotion_data_with_local_global_speaker.csv
+## Repository layout
+
+```
+src/
+  config.py              Paths, model names, emotion labels
+  download_evc.py        Download the Emotion_Balanced training set from Hugging Face
+  build_manifest.py      Match audio files to metadata → data/manifest.csv
+  make_speaker_folds.py  5 speaker-independent folds (train / val / calibration) → data/splits.json
+  transcribe_fast.py     Whisper transcripts with faster-whisper → data/transcripts.csv
+  transcribe_dataset.py  Same, with the transformers ASR pipeline
+  dataset.py             PyTorch dataset (cropping, padding, optional in-memory audio cache)
+  model.py               EmotionModel (WavLM + optional DistilRoBERTa, attention pooling, VAD head)
+  train.py               Audio+text training
+  train_optimized.py     Same with extra GPU-throughput tuning (used by run_training.sh)
+  train_audio_only.py    Audio-only training
+  calibrate.py           Temperature scaling + confidence threshold for an abstain policy
+  evaluate.py            Held-out fold metrics: accuracy, macro-F1, ECE, NLL, VAD RMSE/Pearson
+  report.py              Aggregate results across folds
+  compare_models.py      Quick audio-only vs audio+text comparison on manifest samples
+  evaluate_both_models.py  Cross-dataset evaluation on CREMA-D / RAVDESS / SAVEE / TESS
+  visualize_results.py   Plots for the cross-dataset results → results/
+  predict.py             Single-file inference (Whisper + emotion model)
+  gui.py                 Tkinter app: record from mic or pick a random file and predict
+  gpu_monitor.py, gpu_optimize.py  GPU diagnostics / live monitoring
+run_ensemble.sh          Train all 5 folds
+run_training.sh          Remote-VM launcher (background training + GPU monitoring)
+check_training.sh        Check status of a run started by run_training.sh
+deploy_and_run.sh        rsync code to a JarvisLabs VM and start training
+test_system.py           Forward-pass smoke test
+results/                 Cross-dataset result figures
 ```
 
-The manifest builder expects `Document`, `Part Number`, `start`, `end`, `global_speakers`,
-`Emotion`, `Valence`, `Arousal`, and `Dominance` metadata columns. Filenames are matched by
-document and part number. The download script is a placeholder; datasets and trained checkpoints
-are not included. Loading the backbone also requires access to the pretrained model.
+## Setup
 
-## Development workflow
-
-After preparing compatible data:
-
-```sh
-python src/build_manifest.py
-python src/make_speaker_folds.py
-python src/train.py --fold 0 --seed 42
-python src/calibrate.py --fold 0 --seed 42
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python test_system.py   # smoke test: downloads wavlm-base + distilroberta, runs one forward pass
 ```
 
-After training, inference accepts an audio path and a checkpoint directory:
+The GUI also requires Tk and PortAudio for `sounddevice`. On macOS, run `brew install portaudio`.
 
-```sh
-python src/predict.py sample.wav --checkpoint_dir checkpoints/fold_0_seed_42
+## Data preparation
+
+Run all commands from the repository root.
+
+```bash
+# 1. Training data (NaturalVoices EVC "Emotion_Balanced", ~MSP-Podcast segments)
+python src/download_evc.py --token <HF_TOKEN>   # → Emotion_Balanced/
+
+# 2. Manifest + speaker-independent folds
+python src/build_manifest.py                     # → data/manifest.csv
+python src/make_speaker_folds.py                 # → data/splits.json
+
+# 3. Transcripts for the text branch (optional for audio-only)
+python src/transcribe_fast.py                    # → data/transcripts.csv
 ```
 
-These commands describe the implemented workflow; an end-to-end reproducible run has not been
-documented in this repository yet.
+Folds are split by speaker with `GroupKFold`. Each fold's held-out speakers are then split 50/50 into an early-stopping set and a calibration set. No speaker appears in more than one split.
 
-## Code map
+## Training
 
-| Area | File |
-| --- | --- |
-| Audio loading and preprocessing | [src/dataset.py](src/dataset.py) |
-| WavLM, attention pooling, and output heads | [src/model.py](src/model.py) |
-| Speaker-grouped fold generation | [src/make_speaker_folds.py](src/make_speaker_folds.py) |
-| Training and checkpoint selection | [src/train.py](src/train.py) |
-| Confidence calibration | [src/calibrate.py](src/calibrate.py) |
-| Metrics and reporting | [src/evaluate.py](src/evaluate.py), [src/report.py](src/report.py) |
-| Windowed inference | [src/predict.py](src/predict.py) |
+```bash
+# Audio + text, one fold
+python src/train.py --fold 0 --batch_size 16 --epochs 10 --lr 1e-5
 
-## Research status
+# Audio only
+python src/train_audio_only.py --fold 0
 
-No benchmark results are claimed yet. Before reporting final performance:
+# All five folds
+bash run_ensemble.sh
+```
 
-- Add an untouched test set: evaluation currently combines the validation subset used for checkpoint
-  selection with the subset used for calibration.
-- Fix the missing `torch.nn` import in `src/evaluate.py` before running evaluation.
-- Record dataset provenance, dependency versions, trained checkpoints, and comparisons to a baseline.
+Checkpoints are written to `checkpoints/fold_<k>_seed_<s>/best_model.pt` (audio+text) or `checkpoints/fold_<k>_audio_only/best_model_audio_only.pt`. WavLM-Large needs a large GPU. Training was done on an A100.
 
-The forward-pass test checks output shapes; it does not validate model quality or the full pipeline.
+To train on a remote VM:
+
+```bash
+JARVISLABS_PORT=<port> bash deploy_and_run.sh <fold> <batch_size> <seed>   # from your machine
+bash check_training.sh <fold>                                              # on the VM
+```
+
+## Calibration and evaluation
+
+```bash
+python src/calibrate.py --fold 0 --target_error 0.10   # temperature + abstain threshold
+python src/evaluate.py  --fold 0                       # metrics on held-out speakers
+python src/report.py                                   # summary across folds
+```
+
+### Cross-dataset evaluation
+
+Put the external corpora in a single folder with this layout:
+
+```
+external_datasets/
+  Crema/*.wav
+  Ravdess/audio_speech_actors_01-24/Actor_*/*.wav
+  Savee/*.wav
+  Tess/<SPEAKER>_<emotion>/*.wav
+```
+
+Then run:
+
+```bash
+python src/evaluate_both_models.py --datasets_root external_datasets   # → comparison_results.json
+python src/visualize_results.py                                       # → results/*.png
+```
+
+The script loads `final_models/best_model_audio_only.pt` and `final_models/best_model_audio_text.pt`.
+
+## Inference
+
+```bash
+python src/predict.py path/to/clip.wav --model_path final_models/best_model_audio_text.pt
+python src/gui.py
+```
+
+`predict.py` transcribes the clip with Whisper (tiny), runs the audio+text model, and prints the emotion, its confidence and the VAD scores. The GUI loads `checkpoints/fold_0_seed_42/best_model_with_transcription.pt` by default. To use a different checkpoint, edit `model_path` in `src/gui.py`.
+
+## Model weights
+
+The trained checkpoints are not in this repository. Each one is 1.2–1.6 GB, which exceeds GitHub's file size limit. Place them in `final_models/` to run evaluation and inference.
+
+## Limitations
+
+- Only four emotion classes. Labels from other corpora (Fear, Disgust, Surprise, Calm, …) are excluded during evaluation.
+- Cross-corpus macro-F1 is around 43%. Two likely causes are the domain shift from spontaneous podcast speech to acted studio speech, and Happy being under-recognized.
+- The audio+text model depends on ASR quality and has not been evaluated with real transcripts on the external corpora.
+- There is no untouched in-domain test set yet. `evaluate.py` reports on each fold's held-out speakers, but those speakers are also used for early stopping and calibration.
+- `test_system.py` only checks output shapes. It does not validate model quality or the full pipeline.

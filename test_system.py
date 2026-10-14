@@ -1,6 +1,9 @@
+import os
+import sys
 import torch
-from src.model import EmotionModel
-from src.config import Config
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+from model import EmotionModel
 
 def test_system():
     print("Testing model forward pass...")

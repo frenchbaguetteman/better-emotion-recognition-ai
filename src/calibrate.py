@@ -5,9 +5,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import numpy as np
+import pandas as pd
 from scipy.optimize import minimize
 import pickle
 from tqdm import tqdm
+from transformers import AutoTokenizer
 
 from config import Config
 from dataset import EmotionDataset
@@ -41,7 +43,8 @@ def calibrate(args):
     calib_df = manifest_df.loc[fold_data['calibration']].reset_index(drop=True)
     
     # Dataset
-    calib_ds = EmotionDataset(calib_df, mode='val')
+    tokenizer = AutoTokenizer.from_pretrained(Config.TEXT_MODEL_NAME)
+    calib_ds = EmotionDataset(calib_df, tokenizer=tokenizer, mode='val')
     calib_loader = DataLoader(calib_ds, batch_size=args.batch_size, shuffle=False)
     
     # Load Model
@@ -64,9 +67,17 @@ def calibrate(args):
     with torch.no_grad():
         for batch in tqdm(calib_loader):
             input_values = batch['input_values'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
+            input_ids = batch['input_ids'].to(device)
+            text_attention_mask = batch['text_attention_mask'].to(device)
             
-            logits, _ = model(input_values)
+            logits, _ = model(
+                input_values=input_values,
+                attention_mask=attention_mask,
+                input_ids=input_ids,
+                text_attention_mask=text_attention_mask
+            )
             all_logits.append(logits.cpu())
             all_labels.append(labels.cpu())
             
@@ -136,6 +147,5 @@ def calibrate(args):
     print(f"Saved calibration data to {out_file}")
 
 if __name__ == "__main__":
-    import pandas as pd # Ensure pandas is imported if used inside
     args = parse_args()
     calibrate(args)

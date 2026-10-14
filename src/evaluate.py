@@ -2,6 +2,7 @@ import argparse
 import os
 import json
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 import numpy as np
 import pandas as pd
@@ -9,6 +10,7 @@ from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, mean_squ
 from scipy.stats import pearsonr
 import pickle
 from tqdm import tqdm
+from transformers import AutoTokenizer
 
 from config import Config
 from dataset import EmotionDataset
@@ -64,7 +66,8 @@ def evaluate(args):
     
     print(f"Evaluating on {len(test_df)} samples (Fold {args.fold} Validation Speakers)")
     
-    ds = EmotionDataset(test_df, mode='val')
+    tokenizer = AutoTokenizer.from_pretrained(Config.TEXT_MODEL_NAME)
+    ds = EmotionDataset(test_df, tokenizer=tokenizer, mode='val')
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False)
     
     # Load Model
@@ -91,10 +94,19 @@ def evaluate(args):
     with torch.no_grad():
         for batch in tqdm(loader):
             input_values = batch['input_values'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
             vad_targets = batch['vad'].to(device)
             
-            logits, vad = model(input_values)
+            input_ids = batch['input_ids'].to(device)
+            text_attention_mask = batch['text_attention_mask'].to(device)
+            
+            logits, vad = model(
+                input_values=input_values,
+                attention_mask=attention_mask,
+                input_ids=input_ids,
+                text_attention_mask=text_attention_mask
+            )
             
             all_logits.append(logits.cpu())
             all_labels.append(labels.cpu())

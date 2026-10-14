@@ -1,15 +1,33 @@
-# Dataset
+# Datasets (download separately, see README)
 Emotion_Balanced/
+external_datasets/
 
-# Generated Data
+# Generated data (manifest, splits, transcripts)
 data/
 
-# Model Checkpoints and Logs
+# Model checkpoints and logs (too large for git)
 checkpoints/
+checkpoints_local/
+final_models/
+*.pt
+*.pth
+*.pkl
+training_logs/
+
+# Evaluation outputs
+comparison_results.json
+evaluation_results.json
+multi_dataset_comparison.json
+temp_recording.wav
+*.tar.gz
 
 # Python
 __pycache__/
 *.pyc
+.venv/
+venv/
 
-# System
+# System / editors
 .DS_Store
+.vscode/
+.idea/

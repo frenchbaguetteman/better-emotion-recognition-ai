@@ -79,6 +79,7 @@ def build_manifest():
                         'valence': row['Valence'],
                         'arousal': row['Arousal'],
                         'dominance': row['Dominance'],
+                        'text': row['text'],
                         'split': 'train' # Default, will split later
                     })
                 else:

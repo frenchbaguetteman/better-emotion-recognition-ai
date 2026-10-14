@@ -1,12 +1,28 @@
+# Core (training / evaluation)
 torch>=2.0.0
 torchaudio>=2.0.0
 transformers>=4.30.0
+accelerate
+datasets
+numpy
+scipy
 pandas
 scikit-learn
 tqdm
 librosa
 soundfile
-numpy
-scipy
-accelerate
-datasets
+samplerate
+soxr
+requests
+
+# Inference: speech-to-text for the audio+text model (predict.py, gui.py)
+openai-whisper
+# Faster batch transcription of the training set (transcribe_fast.py)
+faster-whisper
+
+# Live microphone GUI (gui.py)
+sounddevice
+
+# Plotting (visualize_results.py)
+matplotlib
+seaborn
